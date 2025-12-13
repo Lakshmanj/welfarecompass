@@ -1,7 +1,22 @@
 require('dotenv').config();
+
+// --- DEBUGGING START ---
+console.log("------------------------------------------------");
+console.log("DEBUG: Checking API Key...");
+if (!process.env.GEMINI_API_KEY) {
+  console.error("❌ ERROR: GEMINI_API_KEY is undefined. The .env file is not being read.");
+} else {
+  // Print first 5 chars to verify it's loaded, but don't leak the whole thing
+  console.log("✅ SUCCESS: Key found. Starts with: " + process.env.GEMINI_API_KEY.substring(0, 5) + "...");
+}
+console.log("------------------------------------------------");
+// --- DEBUGGING END ---
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const { GoogleGenerativeAI } = require("@google/generative-ai"); // Import AI
+
 const Resource = require('./models/Resource');
 
 const app = express();
@@ -13,53 +28,74 @@ mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected Locally'))
   .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
+// --- AI Setup ---
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" }); // Use the fast, free model
+
 // --- API Routes ---
 
-
-// 1. GET Resources (Filter + Smart Search) - Covers U-01
 app.get('/api/resources', async (req, res) => {
   try {
     const { category, urgency, search } = req.query;
     let filter = {};
+    let botMessage = "";
 
-    // Standard Filters
+    // 1. Standard Dropdown Filters (Priority)
     if (category) filter.category = category;
     if (urgency) filter.urgency = urgency;
     
-    // "Smart" AI Logic (U-07)
+    // 2. AI Logic (Only if user typed something in the search bar)
     if (search) {
-      const term = search.toLowerCase();
+      try {
+        // Ask Gemini to classify the input
+        const prompt = `
+          You are a mental health triage assistant.
+          User Input: "${search}"
+          
+          Task 1: Classify this input into EXACTLY one of these categories: Anxiety, Depression, Stress, Crisis, General.
+          Task 2: Write a short, empathetic, 1-sentence response to the user.
+          
+          Return JSON format only: { "category": "...", "message": "..." }
+        `;
 
-      // 1. Check for specific Keywords (The "AI" part)
-      if (term.includes('anxi') || term.includes('worr') || term.includes('panic')) {
-        filter.category = 'Anxiety';
-      } 
-      else if (term.includes('depress') || term.includes('sad') || term.includes('hopeless')) {
-        filter.category = 'Depression';
-      }
-      else if (term.includes('stress') || term.includes('overwhelm') || term.includes('burnout')) {
-        filter.category = 'Stress';
-      }
-      else if (term.includes('crisis') || term.includes('suicid') || term.includes('emergency') || term.includes('kill')) {
-        filter.category = 'Crisis';
-      }
-      // 2. If no keywords match, do a broad text search
-      else {
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+        
+        // Parse the JSON from AI
+        // (Clean up markdown code blocks if AI adds them)
+        const jsonStr = text.replace(/```json|```/g, '').trim();
+        const aiAnalysis = JSON.parse(jsonStr);
+
+        // Apply the AI's category to the filter
+        filter.category = aiAnalysis.category;
+        botMessage = aiAnalysis.message;
+
+      } catch (aiError) {
+        console.error("AI Error:", aiError);
+        // Fallback if AI fails (e.g. internet issues)
         filter.$or = [
           { title: { $regex: search, $options: 'i' } },
           { description: { $regex: search, $options: 'i' } }
         ];
+        botMessage = "I'm having trouble connecting to my AI brain, but here are some search results.";
       }
     }
 
     const resources = await Resource.find(filter).sort({ createdAt: -1 });
-    res.json(resources);
+    
+    res.json({
+      count: resources.length,
+      message: botMessage, 
+      data: resources
+    });
+
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
-// 2. ADD Resource - Covers U-04
+// --- Other Routes (Unchanged) ---
 app.post('/api/resources', async (req, res) => {
   try {
     const newResource = new Resource(req.body);
@@ -70,21 +106,15 @@ app.post('/api/resources', async (req, res) => {
   }
 });
 
-// 3. EDIT Resource - Covers U-05
 app.put('/api/resources/:id', async (req, res) => {
   try {
-    const updatedResource = await Resource.findByIdAndUpdate(
-      req.params.id, 
-      req.body, 
-      { new: true } // Return the updated version
-    );
+    const updatedResource = await Resource.findByIdAndUpdate(req.params.id, req.body, { new: true });
     res.json(updatedResource);
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
 });
 
-// 4. DELETE Resource - Covers U-06
 app.delete('/api/resources/:id', async (req, res) => {
   try {
     await Resource.findByIdAndDelete(req.params.id);
@@ -94,7 +124,6 @@ app.delete('/api/resources/:id', async (req, res) => {
   }
 });
 
-// 5. ADMIN LOGIN - Covers U-03
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body;
   if (username === 'admin' && password === 'admin123') {
@@ -104,6 +133,5 @@ app.post('/api/auth/login', (req, res) => {
   }
 });
 
-// --- Start Server ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
