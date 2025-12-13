@@ -28,10 +28,10 @@ export default function Login() {
         {error && <p style={{color:'red', textAlign:'center'}}>{error}</p>}
         <form onSubmit={handleLogin}>
           <label>Username</label>
-          <input type="text" value={username} onChange={e => setUsername(e.target.value)} placeholder="admin" />
+          <input type="text" value={username} onChange={e => setUsername(e.target.value)} placeholder="Enter Username" />
           
           <label>Password</label>
-          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="admin123" />
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Enter Password" />
           
           <button type="submit" style={{width:'100%'}}>Login</button>
         </form>
